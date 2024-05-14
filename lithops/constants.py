@@ -115,7 +115,8 @@ SERVERLESS_BACKENDS = [
     'azure_containers',
     'aliyun_fc',
     'oracle_f',
-    'k8s'
+    'k8s',
+    'aws_ec2_rabbit'
 ]
 
 STANDALONE_BACKENDS = [
