@@ -162,7 +162,7 @@ class AWSEC2Backend:
                     f"export vhost={self.config['iam_role']}\n" + config.BUILD_IMAGE_CONFIG_SCRIPT
 
         # Create the build VM and wait for it to be ready
-        build_vm.create(user_data=user_data)
+        build_vm.create(user_data=user_data, server=True)
 
         logger.debug("Executing Lithops installation script. Be patient, this process can take up to 4 minutes")
         
