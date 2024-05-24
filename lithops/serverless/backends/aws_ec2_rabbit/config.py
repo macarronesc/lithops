@@ -14,22 +14,42 @@
 # limitations under the License.
 #
 
+import os
+
 # Script to install RabbitMQ and Lithops in the VM
 BUILD_IMAGE_INIT_SCRIPT = """#!/bin/bash
-sudo add-apt-repository ppa:deadsnakes/ppa -y
-sudo apt-get update -y
 sudo echo "\$nrconf{restart} = 'a';" | sudo tee -a /etc/needrestart/needrestart.conf
 """
 
 BUILD_IMAGE_INSTALL_SCRIPT = """
+sudo apt-get update -y
+
+# Install RabbitMQ
 sudo apt-get install rabbitmq-server -y --fix-missing
+
+# Check if I need to install docker
+if [ $use_docker = "True" ] 
+then
+    # Add Docker repository
+    sudo apt install apt-transport-https ca-certificates curl software-properties-common
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu jammy stable"
+
+    # Install Docker
+    sudo apt-get update
+    sudo apt-get install docker-ce -y
+
+    # Add user to docker group
+    sudo usermod -aG docker ${USER}
+fi
+
+# Install python
+sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt-get install $pyversion -y
 sudo apt install python3-virtualenv -y
-
 virtualenv -p /usr/bin/$pyversion lithops
 source lithops/bin/activate
 pip install setuptools --upgrade
-
 pip install pika lithops[all]==$lithopsversion
 """
 
@@ -109,8 +129,37 @@ DEFAULT_CONFIG_KEYS = {
     'runtime_memory': 512,
     'worker_processes': 1,
     'runtime_timeout': 600,  # Default: 10 minutes
-    'exec_mode': 'reuse'
+    'exec_mode': 'reuse',
+    'docker_server': 'docker.io'
 }
+
+FH_ZIP_LOCATION = os.path.join(os.getcwd(), 'lithops_ec2.zip')
+
+DOCKERFILE_DEFAULT = """
+RUN apt-get update && apt-get install -y zip \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade --ignore-installed setuptools six pip \
+    && pip install --upgrade --no-cache-dir --ignore-installed \
+        pika \
+        boto3 \
+        ibm-cloud-sdk-core \
+        ibm-cos-sdk \
+        requests \
+        panda \
+        numpy \
+        cloudpickle \
+        ps-mem \
+        tblib \
+        psutil
+
+# Copy Lithops proxy and lib to the container image.
+WORKDIR /lithops
+
+COPY lithops_ec2.zip .
+RUN unzip lithops_ec2.zip && rm lithops_ec2.zip
+"""
 
 def load_config(config_data):
     if not config_data['aws_ec2_rabbit']:

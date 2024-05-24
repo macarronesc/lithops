@@ -36,6 +36,11 @@ from lithops.standalone.utils import StandaloneMode
 
 logger = logging.getLogger("lithops.worker")
 
+def shutdown():
+    logger.info("Shutting down the worker")
+    os.system("sudo shutdown -h now")
+    os._exit(0)
+
 def extract_runtime_meta(payload):
     logger.info(f"Lithops v{__version__} - Generating metadata")
 
@@ -62,8 +67,7 @@ def run_job_k8s_rabbitmq(payload):
     logger.info("Finishing EC2 Job execution")
 
     if mode == StandaloneMode.CREATE.value and running_jobs.value == cpus_machine:
-        logger.info("All jobs were sent to the queue. Shutting down the pod")
-        os.system("sudo shutdown -h now")
+        shutdown()
 
 def callback_work_queue(ch, method, properties, body):
     """Callback to receive the payload and run the jobs"""
@@ -117,7 +121,7 @@ def callback_work_queue(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
     # Start a new shutdown timer
-    timeout_timer = Timer(timeout_client, lambda: os.system("sudo shutdown -h now")) 
+    timeout_timer = Timer(timeout_client, lambda: shutdown()) 
     timeout_timer.start()
 
 def start_rabbitmq_listening(payload):
@@ -128,11 +132,14 @@ def start_rabbitmq_listening(payload):
     global mode
 
     # Connect to rabbitmq
-    params = pika.URLParameters(payload["amqp_url"])
-    connection = pika.BlockingConnection(params)
-    channel = connection.channel()
-    channel.queue_declare(queue="task_queue", durable=True)
-    channel.basic_qos(prefetch_count=1)
+    try:
+        params = pika.URLParameters(payload["amqp_url"])
+        connection = pika.BlockingConnection(params)
+        channel = connection.channel()
+        channel.queue_declare(queue="task_queue", durable=True)
+        channel.basic_qos(prefetch_count=1)
+    except Exception as e:
+        shutdown()
 
     # Shared variable to track completed jobs
     running_jobs = Value("i", payload["cpus_pod"])
@@ -148,7 +155,7 @@ def start_rabbitmq_listening(payload):
     channel.basic_consume(queue="task_queue", on_message_callback=callback_work_queue)
 
     # Start the shutdown timer
-    timeout_timer = Timer(timeout_client, lambda: os.system("sudo shutdown -h now")) 
+    timeout_timer = Timer(timeout_client, lambda: shutdown())
     timeout_timer.start() 
 
     logger.info("Listening to rabbitmq...")
