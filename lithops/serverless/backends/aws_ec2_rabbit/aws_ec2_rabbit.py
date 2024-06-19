@@ -372,7 +372,7 @@ class AWSEC2Backend:
 
             user_data = f"""#!/bin/bash
                 echo {self.config['docker_password']} | docker login -u {self.config['docker_user']} --password-stdin {self.config['docker_server']} 
-                docker run --name lithops-rabbitmq {self.config['docker_server']}/{docker_image} python entry_point.py 'start_rabbitmq' {utils.dict_to_b64str(payload)}
+                sudo docker run --name lithops-rabbitmq {self.config['docker_server']}/{docker_image} python entry_point.py 'start_rabbitmq' {utils.dict_to_b64str(payload)}
                 sudo shutdown -h now
             """
         else:
@@ -604,7 +604,7 @@ class AWSEC2Backend:
 
             user_data = f"""#!/bin/bash
                 echo {self.config['docker_password']} | docker login -u {self.config['docker_user']} --password-stdin {self.config['docker_server']} 
-                docker run --name lithops-rabbitmq {self.config['docker_server']}/{docker_image} python entry_point.py 'get_metadata' {utils.dict_to_b64str(payload)}
+                sudo docker run --name lithops-rabbitmq {self.config['docker_server']}/{docker_image} python entry_point.py 'get_metadata' {utils.dict_to_b64str(payload)}
             """
         else:
             user_data = f"""#!/bin/bash
@@ -680,6 +680,7 @@ class EC2Instance:
         self.server_instance_type = self.config['server_instance_type']
         self.spot_instance = self.config['request_spot_instances']
         self.ssh_key_name = self.config.get('ssh_key_name', None)
+        self.memory_size = self.config.get('memory_size', None)
         
         self.ec2_client = ec2_client
 
@@ -708,6 +709,15 @@ class EC2Instance:
             'DeviceIndex': 0,
             'Groups': [self.config['security_group_id']]
         }]
+
+        if self.memory_size:
+            LaunchSpecification['BlockDeviceMappings'] = [{
+                'DeviceName': '/dev/sda1',
+                'Ebs': {
+                    'VolumeSize': self.memory_size,
+                    'VolumeType': 'gp2'
+                }
+            }]
 
         if self.ssh_key_name:
             LaunchSpecification['KeyName'] = self.ssh_key_name
