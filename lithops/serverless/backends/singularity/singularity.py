@@ -196,7 +196,6 @@ class SingularityBackend:
         logger.info(f"Extracting metadata from: {singularity_image_name}")
 
         payload = copy.deepcopy(self.internal_storage.storage.config)
-        payload['runtime_name'] = runtime_name
         payload['log_level'] = logger.getEffectiveLevel()
         encoded_payload = utils.dict_to_b64str(payload)
 
@@ -216,15 +215,27 @@ class SingularityBackend:
 
         logger.debug("Waiting for runtime metadata")
 
-        for i in range(0, 300):
-            try:
-                data_key = '/'.join([JOBS_PREFIX, runtime_name + '.meta'])
-                json_str = self.internal_storage.get_data(key=data_key)
-                runtime_meta = json.loads(json_str.decode("ascii"))
-                self.internal_storage.del_data(key=data_key)
+        # Declare queue
+        self.channel.queue_declare(queue='status_queue', durable=True)
+
+        # Check until a new message arrives to the status_queue queue
+        start_time = time.time()
+        runtime_meta = None
+
+        while True:
+            elapsed_time = time.time() - start_time
+            if elapsed_time > 600:  # 10 minutes
+                raise Exception("Unable to extract metadata from the runtime")
+
+            method_frame, properties, body = self.channel.basic_get('status_queue')
+
+            if method_frame:
+                runtime_meta = json.loads(body)
                 break
-            except Exception:
-                time.sleep(2)
+            else:
+                logger.debug('...')
+            
+            time.sleep(1)
 
         if not runtime_meta or 'preinstalls' not in runtime_meta:
             raise Exception(f'Failed getting runtime metadata: {runtime_meta}')

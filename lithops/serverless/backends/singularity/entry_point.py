@@ -34,16 +34,20 @@ from lithops.storage.storage import InternalStorage
 logger = logging.getLogger('lithops.worker')
 
 
-def extract_runtime_meta(payload):
+def extract_runtime_meta():
     logger.info(f"Lithops v{__version__} - Generating metadata")
 
     runtime_meta = get_runtime_metadata()
 
-    internal_storage = InternalStorage(payload)
-    status_key = '/'.join([JOBS_PREFIX, payload['runtime_name'] + '.meta'])
-    dmpd_response_status = json.dumps(runtime_meta)
-    internal_storage.put_data(status_key, dmpd_response_status)
-    logger.info(f"Runtime metadata key {status_key}")
+    channel.basic_publish(
+        exchange='',
+        routing_key='status_queue',
+        body=json.dumps(runtime_meta),
+        properties=pika.BasicProperties(
+            delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE
+        ))
+    
+    logger.info(f"Runtime metadata generated")
 
 
 def run_job_k8s_rabbitmq(payload):
@@ -117,7 +121,7 @@ def actions_switcher(ch, method, properties, body):
     logger.info(f"Action {action} received from lithops.")
 
     if action == 'get_metadata':
-        extract_runtime_meta(payload)
+        extract_runtime_meta()
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
     elif action == 'send_task':
