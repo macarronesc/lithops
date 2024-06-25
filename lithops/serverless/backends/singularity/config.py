@@ -56,6 +56,9 @@ SINGULARITYFILE_DEFAULT = """
     unzip lithops_singularity.zip && rm lithops_singularity.zip
 
 %runscript
+    echo "CPUs: $(nproc)"
+    echo "Memory: $(awk '/MemTotal/ {print $2/1024}' /proc/meminfo)"
+    echo "AMQP_URL: $AMQP_URL"
     python3 /lithops/lithopsentry.py $AMQP_URL
 """
 
