@@ -17,7 +17,7 @@ import itertools
 import traceback
 import os
 import logging
-import multiprocessing as _mp
+import threading
 
 from lithops import FunctionExecutor
 from lithops.utils import is_lithops_worker
@@ -51,7 +51,7 @@ def current_process():
         p._pid = os.environ.get('__LITHOPS_SESSION_ID', '-1')
         return p
     else:
-        return _mp.current_process()
+        return threading.current_thread()
 
 
 def active_children():

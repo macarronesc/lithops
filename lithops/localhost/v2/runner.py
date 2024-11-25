@@ -20,7 +20,6 @@ import json
 import platform
 import logging
 import uuid
-import multiprocessing as mp
 
 from lithops.worker import function_handler
 from lithops.worker.utils import get_runtime_metadata
@@ -40,11 +39,6 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 log_file_stream = open(RN_LOG_FILE, 'a')
 logging.basicConfig(stream=log_file_stream, level=logging.DEBUG, format=LOGGER_FORMAT)
 logger = logging.getLogger('lithops.localhost.runner')
-
-
-# Change spawn method for MacOS
-if platform.system() == 'Darwin':
-    mp.set_start_method("fork")
 
 
 def run_job():
