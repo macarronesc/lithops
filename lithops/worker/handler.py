@@ -25,13 +25,11 @@ import base64
 import pickle
 import logging
 import traceback
-import multiprocessing as mp
 from queue import Queue, Empty
 from threading import Thread
-from multiprocessing import Process, Pipe
+from multiprocessing import Pipe
 from tblib import pickling_support
 from types import SimpleNamespace
-from multiprocessing.managers import SyncManager
 
 from lithops.version import __version__
 from lithops.config import extract_storage_config
@@ -82,9 +80,7 @@ def function_handler(payload):
         work_queue.put(ShutdownSentinel())
         python_queue_consumer(0, work_queue, )
     else:
-        manager = SyncManager()
-        manager.start()
-        work_queue = manager.Queue()
+        work_queue = Queue()
         job_runners = []
 
         for call_id in job.call_ids:
@@ -93,14 +89,12 @@ def function_handler(payload):
 
         for pid in range(worker_processes):
             work_queue.put(ShutdownSentinel())
-            p = mp.Process(target=python_queue_consumer, args=(pid, work_queue,))
-            job_runners.append(p)
-            p.start()
+            t = threading.Thread(target=python_queue_consumer, args=(pid, work_queue,))
+            job_runners.append(t)
+            t.start()
 
         for runner in job_runners:
             runner.join()
-
-        manager.shutdown()
 
     # Delete modules path from syspath
     module_path = os.path.join(MODULES_DIR, job.job_key)
@@ -203,10 +197,10 @@ def run_task(task):
 
         handler_conn, jobrunner_conn = Pipe()
         jobrunner = JobRunner(task, jobrunner_conn, internal_storage)
-        logger.debug('Starting JobRunner process')
-        jrp = Process(target=jobrunner.run) if is_unix_system() else Thread(target=jobrunner.run)
+        logger.debug('Starting JobRunner thread')
+        jrp = Thread(target=jobrunner.run)
 
-        process_id = os.getpid() if is_unix_system() else mp.current_process().pid
+        process_id = os.getpid()
         sys_monitor = SystemMonitor(process_id)
         sys_monitor.start()
 
