@@ -21,10 +21,10 @@ import logging
 import atexit
 import pickle
 import tempfile
-import subprocess as sp
 from typing import Optional, List, Union, Tuple, Dict, Any
 from collections.abc import Callable
 from datetime import datetime
+import threading
 
 from lithops import constants
 from lithops.future import ResponseFuture
@@ -626,8 +626,13 @@ class FunctionExecutor:
 
         spawn_cleaner = not (CLEANER_PROCESS and CLEANER_PROCESS.poll() is None)
         if (jobs_to_clean or cs) and spawn_cleaner:
-            cmd = [sys.executable, '-m', 'lithops.scripts.cleaner']
-            CLEANER_PROCESS = sp.Popen(cmd, start_new_session=True)
+            def run_cleaner():
+                cmd = f"{sys.executable} -m lithops.scripts.cleaner"
+                os.system(cmd)
+
+            if (jobs_to_clean or cs) and spawn_cleaner:
+                cleaner_thread = threading.Thread(target=run_cleaner)
+                cleaner_thread.start()
 
     def job_summary(self, cloud_objects_n: Optional[int] = 0):
         """

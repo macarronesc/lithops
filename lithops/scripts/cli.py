@@ -22,7 +22,6 @@ import click
 import logging
 import shutil
 import shlex
-import subprocess as sp
 from itertools import cycle
 from tabulate import tabulate
 from datetime import datetime
@@ -267,8 +266,13 @@ def attach(config, backend, start, debug, region):
 
     compute_handler.backend.master.wait_ready()
 
-    sp.run(shlex.split(cmd))
+    def run_attach():
+        args = shlex.split(cmd) 
+        os.execvp(args[0], args)
 
+    # Crea el hilo
+    thread = threading.Thread(target=command_target, daemon=True)
+    thread.start()
 
 # /---------------------------------------------------------------------------/
 #
