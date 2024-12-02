@@ -21,6 +21,7 @@ import zlib
 import time
 import json
 import uuid
+import copy
 import base64
 import pickle
 import logging
@@ -85,11 +86,12 @@ def function_handler(payload):
 
         for call_id in job.call_ids:
             data = job.data.pop(0)
-            work_queue.put((job, call_id, data))
+            task_copy = copy.copy(job)
+            work_queue.put((task_copy, call_id, data))
 
         for pid in range(worker_processes):
             work_queue.put(ShutdownSentinel())
-            t = threading.Thread(target=python_queue_consumer, args=(pid, work_queue,))
+            t = Thread(target=python_queue_consumer, args=(pid, work_queue,))
             job_runners.append(t)
             t.start()
 
