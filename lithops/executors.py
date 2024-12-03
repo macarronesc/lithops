@@ -630,9 +630,8 @@ class FunctionExecutor:
                 cmd = f"{sys.executable} -m lithops.scripts.cleaner"
                 os.system(cmd)
 
-            if (jobs_to_clean or cs) and spawn_cleaner:
-                cleaner_thread = threading.Thread(target=run_cleaner)
-                cleaner_thread.start()
+            cleaner_thread = threading.Thread(target=run_cleaner, daemon=True)
+            cleaner_thread.start()
 
     def job_summary(self, cloud_objects_n: Optional[int] = 0):
         """

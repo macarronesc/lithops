@@ -718,7 +718,6 @@ def run_command(cmd, return_result=False, input=None):
         kwargs['stderr'] = sp.DEVNULL
 
     if input:
-        exit_code = os.system(cmd)
         return sp.check_output(cmd.split(), input=bytes(input, 'utf-8'), **kwargs)
 
     if return_result:
