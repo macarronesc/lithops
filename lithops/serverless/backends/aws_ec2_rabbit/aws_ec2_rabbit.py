@@ -164,7 +164,7 @@ class AWSEC2Backend:
         logger.debug("Executing Lithops installation script. Be patient, this process can take up to 5 minutes")
         
         self.amqp_url = AMQP_URL_FORMAT.format(self.user_id, self.user_id, build_vm.public_ip, self.config['iam_role'])
-        build_vm.wait_build_configured(self.amqp_url)
+        self.wait_build_configured(self.amqp_url)
         logger.debug("Lithops installation script finished")
         self.amqp_url = None
 
@@ -345,7 +345,7 @@ class AWSEC2Backend:
         logger.debug("Starting RabbitMQ server. Be patient, this process can take up to 1 minutes")
         
         self.amqp_url = AMQP_URL_FORMAT.format(self.user_id, self.user_id, server_vm.public_ip, self.config['iam_role'])
-        server_vm.wait_build_configured(self.amqp_url)
+        self.wait_build_configured(self.amqp_url)
         logger.debug("RabbitMQ server started successfully")
     
     # DONE
@@ -356,7 +356,6 @@ class AWSEC2Backend:
         payload = {
             'log_level': 'DEBUG',
             'amqp_url': self.amqp_url,
-            'cpus_pod': cpu,
             'timeout': self.config['runtime_timeout'],
             'mode': self.mode,
         }
@@ -664,7 +663,28 @@ class AWSEC2Backend:
         }
 
         return runtime_info
+    
+    def wait_build_configured(self, amqp_url):
+        """
+        Wait until the VM send the confirmation message as the configuration is finished
+        """
+        while True:
+            try:
+                params = pika.URLParameters(amqp_url)
+                connection = pika.BlockingConnection(params)
+                channel = connection.channel()
+                break  # If connection is established, break the loop
+            except pika.exceptions.AMQPConnectionError:
+                time.sleep(0.5)  # If connection fails, sleep and retry
 
+
+        channel.queue_declare(queue='build_confirmation', durable=True)
+
+        def callback(ch, method, properties, body):
+            ch.stop_consuming()  # Stop consuming messages
+
+        channel.basic_consume(queue='build_confirmation', on_message_callback=callback, auto_ack=True)
+        channel.start_consuming()
 
 
 class EC2Instance:
@@ -753,29 +773,6 @@ class EC2Instance:
 
         logger.debug(f"VM instance {self.name} created successfully ")
     
-    # DONE
-    def wait_build_configured(self, amqp_url):
-        """
-        Wait until the VM send the confirmation message as the configuration is finished
-        """
-        while True:
-            try:
-                params = pika.URLParameters(amqp_url)
-                connection = pika.BlockingConnection(params)
-                channel = connection.channel()
-                break  # If connection is established, break the loop
-            except pika.exceptions.AMQPConnectionError:
-                time.sleep(0.5)  # If connection fails, sleep and retry
-
-
-        channel.queue_declare(queue='build_confirmation', durable=True)
-
-        def callback(ch, method, properties, body):
-            ch.stop_consuming()  # Stop consuming messages
-
-        channel.basic_consume(queue='build_confirmation', on_message_callback=callback, auto_ack=True)
-        channel.start_consuming()
-
     # DONE
     def delete(self):
         """

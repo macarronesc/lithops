@@ -1,5 +1,5 @@
 #
-# (C) Copyright Cloudlab URV 2020
+# (C) Copyright Cloudlab URV 2025
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import json
 import logging
 import time
 from functools import partial
-from multiprocessing import Value
+from multiprocessing import Value, cpu_count
 from threading import Thread, Timer
 
 from lithops.version import __version__
@@ -142,13 +142,11 @@ def start_rabbitmq_listening(payload):
         shutdown()
 
     # Shared variable to track completed jobs
-    running_jobs = Value("i", payload["cpus_pod"])
-    cpus_machine = payload["cpus_pod"]
+    running_jobs = Value("i", cpu_count())
+    cpus_machine = cpu_count()
 
-    # Set the mode from the client
+    # Set the mode and timeout from the client
     mode = payload["mode"]
-
-    # Set the timeout from the client
     timeout_client = payload["timeout"]
 
     # Start listening to the new job
