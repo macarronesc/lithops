@@ -36,10 +36,12 @@ from lithops.standalone.utils import StandaloneMode
 
 logger = logging.getLogger("lithops.worker")
 
+
 def shutdown():
     logger.info("Shutting down the worker")
     os.system("sudo shutdown -h now")
     os._exit(0)
+
 
 def extract_runtime_meta(payload):
     logger.info(f"Lithops v{__version__} - Generating metadata")
@@ -69,10 +71,11 @@ def run_job_k8s_rabbitmq(payload):
     if mode == StandaloneMode.CREATE.value and running_jobs.value == cpus_machine:
         shutdown()
 
+
 def callback_work_queue(ch, method, properties, body):
     """Callback to receive the payload and run the jobs"""
-    global timeout_timer 
-    
+    global timeout_timer
+
     logger.info("Call from lithops received.")
 
     # Cancel the shutdown timer
@@ -121,12 +124,13 @@ def callback_work_queue(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
     # Start a new shutdown timer
-    timeout_timer = Timer(timeout_client, lambda: shutdown()) 
+    timeout_timer = Timer(timeout_client, lambda: shutdown())
     timeout_timer.start()
+
 
 def start_rabbitmq_listening(payload):
     global running_jobs
-    global timeout_timer 
+    global timeout_timer
     global timeout_client
     global cpus_machine
     global mode
@@ -145,16 +149,16 @@ def start_rabbitmq_listening(payload):
     running_jobs = Value("i", cpu_count())
     cpus_machine = cpu_count()
 
-    # Set the mode and timeout from the client
+    #  Set the mode and timeout from the client
     mode = payload["mode"]
     timeout_client = payload["timeout"]
 
     # Start listening to the new job
-    channel.basic_consume(queue="task_queue", on_message_callback=callback_work_queue)
+    channel.basic_consume(queue="task_queue",on_message_callback=callback_work_queue)
 
     # Start the shutdown timer
     timeout_timer = Timer(timeout_client, lambda: shutdown())
-    timeout_timer.start() 
+    timeout_timer.start()
 
     logger.info("Listening to rabbitmq...")
     channel.start_consuming()

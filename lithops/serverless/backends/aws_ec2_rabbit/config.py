@@ -16,7 +16,7 @@
 
 import os
 
-# Script to install RabbitMQ and Lithops in the VM
+#  Script to install RabbitMQ and Lithops in the VM
 BUILD_IMAGE_INIT_SCRIPT = """#!/bin/bash
 sudo echo "\$nrconf{restart} = 'a';" | sudo tee -a /etc/needrestart/needrestart.conf
 """
@@ -123,7 +123,7 @@ python send_confirmation.py
 
 DEFAULT_CONFIG_KEYS = {
     'server_instance_type': 't2.medium',
-    'worker_instance_type': 't2.micro', # 't2.medium',
+    'worker_instance_type': 't2.micro',  # 't2.medium',
     'request_spot_instances': True,
     'max_workers': 100,
     'runtime_memory': 512,
@@ -161,13 +161,14 @@ COPY lithops_ec2.zip .
 RUN unzip lithops_ec2.zip && rm lithops_ec2.zip
 """
 
+
 def load_config(config_data):
     if not config_data['aws_ec2_rabbit']:
         raise Exception("'aws_ec2_rabbit' section is mandatory in the configuration")
-    
+
     if 'aws' not in config_data:
         config_data['aws'] = {}
-    
+
     config_data['aws_ec2_rabbit'].update(config_data['aws'])
 
     for key in DEFAULT_CONFIG_KEYS:
