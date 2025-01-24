@@ -135,16 +135,6 @@ def start_rabbitmq_listening(payload):
     global cpus_machine
     global mode
 
-    # Connect to rabbitmq
-    try:
-        params = pika.URLParameters(payload["amqp_url"])
-        connection = pika.BlockingConnection(params)
-        channel = connection.channel()
-        channel.queue_declare(queue="task_queue", durable=True)
-        channel.basic_qos(prefetch_count=1)
-    except Exception as e:
-        shutdown()
-
     # Shared variable to track completed jobs
     running_jobs = Value("i", cpu_count())
     cpus_machine = cpu_count()
@@ -153,15 +143,25 @@ def start_rabbitmq_listening(payload):
     mode = payload["mode"]
     timeout_client = payload["timeout"]
 
-    # Start listening to the new job
-    channel.basic_consume(queue="task_queue",on_message_callback=callback_work_queue)
+    # Connect to rabbitmq
+    try:
+        params = pika.URLParameters(payload["amqp_url"])
+        connection = pika.BlockingConnection(params)
+        channel = connection.channel()
+        channel.queue_declare(queue="task_queue", durable=True)
+        channel.basic_qos(prefetch_count=1)
 
-    # Start the shutdown timer
-    timeout_timer = Timer(timeout_client, lambda: shutdown())
-    timeout_timer.start()
+        # Start listening to the new job
+        channel.basic_consume(queue="task_queue",on_message_callback=callback_work_queue)
 
-    logger.info("Listening to rabbitmq...")
-    channel.start_consuming()
+        # Start the shutdown timer
+        timeout_timer = Timer(timeout_client, lambda: shutdown())
+        timeout_timer.start()
+
+        logger.info("Listening to rabbitmq...")
+        channel.start_consuming()
+    except Exception as e:
+        shutdown()
 
 
 if __name__ == "__main__":

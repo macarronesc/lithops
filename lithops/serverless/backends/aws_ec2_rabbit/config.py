@@ -47,7 +47,7 @@ fi
 sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt-get install $pyversion -y
 sudo apt install python3-virtualenv -y
-virtualenv -p /usr/bin/$pyversion lithops
+virtualenv -p /usr/bin/$pyversion --download lithops
 source lithops/bin/activate
 pip install setuptools --upgrade
 pip install pika lithops[all]==$lithopsversion
