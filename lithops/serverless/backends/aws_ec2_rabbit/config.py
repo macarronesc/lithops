@@ -28,15 +28,14 @@ sudo apt-get update -y
 sudo apt-get install rabbitmq-server -y --fix-missing
 
 # Check if I need to install docker
-if [ $use_docker = "True" ] 
+if [ "$use_docker" = "True" ] 
 then
     # Add Docker repository
-    sudo apt install apt-transport-https ca-certificates curl software-properties-common
+    sudo apt install apt-transport-https ca-certificates curl software-properties-common -y
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu jammy stable"
+    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu jammy stable" -y
 
     # Install Docker
-    sudo apt-get update
     sudo apt-get install docker-ce -y
 
     # Add user to docker group
@@ -45,8 +44,7 @@ fi
 
 # Install python
 sudo add-apt-repository ppa:deadsnakes/ppa -y
-sudo apt-get install $pyversion -y
-sudo apt install python3-virtualenv -y
+sudo apt-get install $pyversion python3-virtualenv -y
 virtualenv -p /usr/bin/$pyversion --download lithops
 source lithops/bin/activate
 pip install setuptools --upgrade
@@ -65,9 +63,7 @@ sudo rabbitmqctl set_permissions -p $vhost $username ".*" ".*" ".*"
 
 sudo tee send_confirmation.py > /dev/null <<EOF
 import pika
-import multiprocessing
 import os
-from threading import Timer
 
 username = os.getenv('username')
 vhost = os.getenv('vhost')
@@ -78,51 +74,22 @@ connection = pika.BlockingConnection(params)
 channel = connection.channel()
 channel.queue_declare(queue='build_confirmation', durable=True)
 
-cpus_machine = multiprocessing.cpu_count()
-
 # Send confirmation of the rabbit server
 channel.basic_publish(
     exchange='',
     routing_key='build_confirmation',
-    body=str(cpus_machine),
+    body="",
     properties=pika.BasicProperties(
         delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE
     ))
 connection.close()
-
-
-# Start timeout
-def callback_work_queue(ch, method, properties, body):
-    global timeout_timer
-
-    # Cancel the shutdown timer
-    timeout_timer.cancel()
-    ch.basic_nack(delivery_tag=method.delivery_tag)
-
-    # Start a new shutdown timer
-    timeout_timer = Timer(timeout_client, lambda: os.system("sudo shutdown -h now")) 
-    timeout_timer.start()
-
-
-connection = pika.BlockingConnection(params)
-channel = connection.channel()
-channel.queue_declare(queue="task_queue", durable=True)
-
-# Start listening to the new job
-channel.basic_consume(queue="task_queue", on_message_callback=callback_work_queue)
-
-# Start the shutdown timer
-timeout_timer = Timer(timeout_client, lambda: os.system("sudo shutdown -h now")) 
-timeout_timer.start() 
-
-channel.start_consuming()
 EOF
 
 python send_confirmation.py
 """
 
 DEFAULT_CONFIG_KEYS = {
-    'server_instance_type': 't2.medium',
+    'server_instance_type': 't2.micro',
     'worker_instance_type': 't2.micro',  # 't2.medium',
     'request_spot_instances': True,
     'max_workers': 100,
