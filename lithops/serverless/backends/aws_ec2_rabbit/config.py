@@ -24,9 +24,6 @@ sudo echo "\$nrconf{restart} = 'a';" | sudo tee -a /etc/needrestart/needrestart.
 BUILD_IMAGE_INSTALL_SCRIPT = """
 sudo apt-get update -y
 
-# Install RabbitMQ
-sudo apt-get install rabbitmq-server -y --fix-missing
-
 # Check if I need to install docker
 if [ "$use_docker" = "True" ] 
 then
@@ -53,23 +50,15 @@ pip install pika lithops[all]==$lithopsversion
 
 BUILD_IMAGE_CONFIG_SCRIPT = """
 source lithops/bin/activate
-sudo service rabbitmq-server start
-sudo update-rc.d rabbitmq-server defaults
-sudo rabbitmq-plugins enable rabbitmq_management
-
-sudo rabbitmqctl add_user $username $username
-sudo rabbitmqctl add_vhost $vhost
-sudo rabbitmqctl set_permissions -p $vhost $username ".*" ".*" ".*"
 
 sudo tee send_confirmation.py > /dev/null <<EOF
 import pika
 import os
 
-username = os.getenv('username')
-vhost = os.getenv('vhost')
+amqp_url = os.getenv('amqp_url')
 timeout_client = int(os.getenv('timeout'))
 
-params = pika.URLParameters(f'amqp://{username}:{username}@localhost:5672/{vhost}')
+params = pika.URLParameters(amqp_url)
 connection = pika.BlockingConnection(params)
 channel = connection.channel()
 channel.queue_declare(queue='build_confirmation', durable=True)
@@ -89,7 +78,6 @@ python send_confirmation.py
 """
 
 DEFAULT_CONFIG_KEYS = {
-    'server_instance_type': 't2.micro',
     'worker_instance_type': 't2.micro',  # 't2.medium',
     'request_spot_instances': True,
     'max_workers': 100,

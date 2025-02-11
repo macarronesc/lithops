@@ -36,7 +36,6 @@ from . import config
 
 DEFAULT_UBUNTU_IMAGE = 'ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-202306*'
 DEFAULT_UBUNTU_ACCOUNT_ID = '099720109477'
-AMQP_URL_FORMAT = "amqp://{}:{}@{}:5672/{}"
 
 logger = logging.getLogger(__name__)
 urllib3.disable_warnings()
@@ -56,7 +55,6 @@ class AWSEC2Backend:
 
         self.mode = self.config['exec_mode']
         self.region_name = self.config['region']
-        self.security_group = 'Lithops-RabbitMQ'
 
         self.aws_session = boto3.Session(
             aws_access_key_id=config.get('access_key_id'),
@@ -78,10 +76,6 @@ class AWSEC2Backend:
 
         msg = COMPUTE_CLI_MSG.format('AWS EC2')
         logger.info(f"{msg} - Region: {self.region_name}")
-
-        #  Create the security group if not exists
-        if not 'security_group_id' in self.config:
-            self._create_security_group()
 
     def _format_job_name(self, runtime_name, runtime_memory, version=__version__):
         name = f'{runtime_name}-{runtime_memory}-{version}-{self.user_id[-4:]}'
@@ -153,20 +147,15 @@ class AWSEC2Backend:
                         src_file = f.read()
                         user_data = user_data + f"\necho '{src_file}' > {dst_file}\n"
 
-        # Creating a custom AMQP URL for security (user_id:user_id@localhost:5672/iam_role)
-        user_data = user_data + f"\nexport username={self.user_id}\n" + \
-            f"export timeout={self.config['runtime_timeout']}\n" + \
-            f"export vhost={self.config['iam_role']}\n" + config.BUILD_IMAGE_CONFIG_SCRIPT
+        # Include the configuration script
+        user_data = user_data + f"\nexport amqp_url={self.amqp_url}\n" + \
+            f"export timeout={self.config['runtime_timeout']}\n" + config.BUILD_IMAGE_CONFIG_SCRIPT
 
         # Create the build VM and wait for it to be ready
-        build_vm.create(user_data=user_data, server=True)
-
+        build_vm.create(user_data=user_data)
         logger.debug("Executing Lithops installation script. Be patient, this process can take up to 5 minutes")
-
-        self.amqp_url = AMQP_URL_FORMAT.format(self.user_id, self.user_id, build_vm.public_ip, self.config['iam_role'])
-        self.wait_build_configured(self.amqp_url)
+        self.wait_build_configured()
         logger.debug("Lithops installation script finished")
-        self.amqp_url = None
 
         #  Create an image from the actual VM
         self.ec2_client.create_image(
@@ -189,9 +178,7 @@ class AWSEC2Backend:
             time.sleep(20)
 
         build_vm.delete()
-
         logger.info(f"VM Image created. Image ID: {images[0]['ImageId']}")
-
         self.config['target_ami'] = images[0]['ImageId']
 
     def _build_default_docker(self, docker_image_name, extra_args=[]):
@@ -308,10 +295,6 @@ class AWSEC2Backend:
 
             logger.info('All EC2 VMs deleted')
 
-        # Delete the security group
-        self.ec2_client.delete_security_group(GroupId=self.config['security_group_id'])
-        logger.debug('Security Group deleted')
-
     def list_runtimes(self, image_name='all'):
         """
         List all the runtimes
@@ -320,24 +303,6 @@ class AWSEC2Backend:
         logger.debug('Listing runtimes')
         logger.debug('Note that this backend does not manage runtimes')
         return []
-
-    def _start_rabbit_server(self, image_name):
-        self._extract_ami(image_name)
-
-        server_vm = EC2Instance("lithops-rabbitserver-" + self.user_id[-4:], self.config, self.ec2_client)
-
-        # Creating a custom AMQP URL for security (user_id:user_id@localhost:5672/iam_role)
-        user_data = config.BUILD_IMAGE_INIT_SCRIPT + \
-            f"\nexport username={self.user_id}\n" + \
-            f"export timeout={self.config['runtime_timeout']}\n" + \
-            f"export vhost={self.config['iam_role']}\n" + config.BUILD_IMAGE_CONFIG_SCRIPT
-
-        server_vm.create(user_data=user_data, server=True)
-        logger.debug("Starting RabbitMQ server. Be patient, this process can take up to 1 minutes")
-
-        self.amqp_url = AMQP_URL_FORMAT.format(self.user_id, self.user_id, server_vm.public_ip, self.config['iam_role'])
-        self.wait_build_configured(self.amqp_url)
-        logger.debug("RabbitMQ server started successfully")
 
     def create_worker(self, name, cpu):
         """
@@ -380,59 +345,6 @@ class AWSEC2Backend:
 
         self.workers.append(worker)
 
-    def _create_security_group(self):
-        """
-        Creates a new Security group
-        """
-        logger.debug(f'Creating Security Group in VPC {self.security_group}')
-
-        # Check if the security group already exists
-        security_groups = self.ec2_client.describe_security_groups(
-            Filters=[
-                {
-                    'Name': 'group-name',
-                    'Values': [self.security_group]
-                },
-                {
-                    'Name': 'description',
-                    'Values': [self.security_group]
-                }
-            ]
-        )
-
-        if len(security_groups['SecurityGroups']) > 0:
-            logger.debug(f"Security Group {self.security_group} already exists")
-            self.config['security_group_id'] = security_groups['SecurityGroups'][0]['GroupId']
-            return
-
-        # If not exists, create it
-        else:
-            response = self.ec2_client.create_security_group(
-                GroupName=self.security_group,
-                Description=self.security_group,
-            )
-
-            self.ec2_client.authorize_security_group_ingress(
-                GroupId=response['GroupId'],
-                IpPermissions=[
-                    # RabbitMQ ports
-                    {'IpProtocol': 'tcp',
-                        'FromPort': 15672,
-                        'ToPort': 15672,
-                        'IpRanges': [{'CidrIp': '0.0.0.0/0'}]},
-                    {'IpProtocol': 'tcp',
-                        'FromPort': 4369,
-                        'ToPort': 4369,
-                        'IpRanges': [{'CidrIp': '0.0.0.0/0'}]},
-                    {'IpProtocol': 'tcp',
-                        'FromPort': 5671,
-                        'ToPort': 5672,
-                        'IpRanges': [{'CidrIp': '0.0.0.0/0'}]},
-                ]
-            )
-
-            self.config['security_group_id'] = response['GroupId']
-
     def _extract_ami(self, image_name, default=False):
         owners = [DEFAULT_UBUNTU_ACCOUNT_ID] if default else ["self"]
         images = self.ec2_client.describe_images(
@@ -462,7 +374,6 @@ class AWSEC2Backend:
             for instance in reservation['Instances']:
                 worker = EC2Instance(instance['Tags'][0]['Value'], self.config, self.ec2_client)
                 worker.instance_id = instance['InstanceId']
-                worker.public_ip = instance.get('PublicIpAddress', None)
                 worker.spot_instance = instance.get('InstanceLifecycle', None) == 'spot'
                 worker.target_ami = instance['ImageId']
                 worker.cpu_count = instance['CpuOptions']['CoreCount']
@@ -485,25 +396,8 @@ class AWSEC2Backend:
         # Get all the workers
         self.workers = self._get_workers()
 
-        #  Get the Rabbit server ampq url
-        if not self.amqp_url:
-            # Check if the rabbit server is already started
-            for worker in self.workers:
-                if 'lithops-rabbitserver-' in worker.name:
-                    logger.info(f"Rabbit Server found: {worker.public_ip}")
-
-                    self.amqp_url = AMQP_URL_FORMAT.format(self.user_id, self.user_id, worker.public_ip, self.config['iam_role'])
-                    self.config['target_ami'] = worker.target_ami
-
-                    self.workers.remove(worker)
-                    break
-
-            #  Rabbit server not found, start it
-            else:
-                self._start_rabbit_server(image_name)
-
-        # Rabbit server already started
-        elif self.config.get('target_ami', None) is None:
+        # Check if the target AMI is set
+        if self.config.get('target_ami', None) is None:
             self._extract_ami(image_name)
 
         cpu_count = 0
@@ -659,13 +553,13 @@ class AWSEC2Backend:
 
         return runtime_info
 
-    def wait_build_configured(self, amqp_url):
+    def wait_build_configured(self):
         """
         Wait until the VM send the confirmation message as the configuration is finished
         """
         while True:
             try:
-                params = pika.URLParameters(amqp_url)
+                params = pika.URLParameters(self.amqp_url)
                 connection = pika.BlockingConnection(params)
                 channel = connection.channel()
                 break  # If connection is established, break the loop
@@ -691,9 +585,7 @@ class EC2Instance:
         self.config = ec2_config
 
         self.worker_instance_type = self.config['worker_instance_type']
-        self.server_instance_type = self.config['server_instance_type']
         self.spot_instance = self.config['request_spot_instances']
-        self.ssh_key_name = self.config.get('ssh_key_name', None)
         self.availability_zone = self.config.get('availability_zone', None)
         self.memory_size = self.config.get('memory_size', None)
 
@@ -701,16 +593,15 @@ class EC2Instance:
 
         self.instance_id = None
         self.target_ami = None
-        self.public_ip = None
         self.cpu_count = 0
 
-    def create(self, user_data=None, server=False):
+    def create(self, user_data=None):
         """
         Creates a new VM instance
         """
         LaunchSpecification = {
             "ImageId": self.config['target_ami'],
-            "InstanceType": self.server_instance_type if server else self.worker_instance_type,
+            "InstanceType": self.worker_instance_type,
             "IamInstanceProfile": {'Name': self.config['iam_role']},
             "Monitoring": {'Enabled': False},
             "MinCount": 1,
@@ -721,7 +612,6 @@ class EC2Instance:
         LaunchSpecification['NetworkInterfaces'] = [{
             'AssociatePublicIpAddress': True,
             'DeviceIndex': 0,
-            'Groups': [self.config['security_group_id']]
         }]
 
         if self.memory_size:
@@ -732,9 +622,6 @@ class EC2Instance:
                     'VolumeType': 'gp2'
                 }
             }]
-
-        if self.ssh_key_name:
-            LaunchSpecification['KeyName'] = self.ssh_key_name
 
         if user_data:
             LaunchSpecification['UserData'] = user_data
@@ -766,10 +653,6 @@ class EC2Instance:
         self.target_ami = instance_data['ImageId']
         self.cpu_count = instance_data['CpuOptions']['CoreCount']
 
-        #  Get the public IP only if the instance is a server
-        if server:
-            self.public_ip = self.get_public_ip()
-
         logger.debug(f"VM instance {self.name} created successfully ")
 
     def delete(self):
@@ -779,17 +662,3 @@ class EC2Instance:
         logger.debug(f"Deleting VM instance {self.name} ({self.instance_id})")
 
         self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
-
-        self.instance_id = None
-        self.public_ip = '0.0.0.0'
-
-    def get_public_ip(self):
-        """
-        Get the public IP of the VM instance
-        """
-        waiter = self.ec2_client.get_waiter('instance_running')
-        waiter.wait(InstanceIds=[self.instance_id])
-
-        instance_data = self.ec2_client.describe_instances(InstanceIds=[self.instance_id])[
-            'Reservations'][0]['Instances'][0]
-        return instance_data.get('PublicIpAddress')
