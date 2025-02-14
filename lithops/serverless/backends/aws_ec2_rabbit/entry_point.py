@@ -150,13 +150,21 @@ def start_rabbitmq_listening(payload):
         channel = connection.channel()
         channel.queue_declare(queue="task_queue", durable=True)
         channel.basic_qos(prefetch_count=1)
-
-        # Start listening to the new job
-        channel.basic_consume(queue="task_queue",on_message_callback=callback_work_queue)
-
+        
         # Start the shutdown timer
         timeout_timer = Timer(timeout_client, lambda: shutdown())
         timeout_timer.start()
+        
+        # Process previous (queued) messages
+        while True:
+            method_frame, properties, body = channel.basic_get(queue="task_queue", auto_ack=False)
+            if method_frame:
+                callback_work_queue(channel, method_frame, properties, body)
+            else:
+                break
+
+        # Start listening to the new job
+        channel.basic_consume(queue="task_queue",on_message_callback=callback_work_queue)
 
         logger.info("Listening to rabbitmq...")
         channel.start_consuming()

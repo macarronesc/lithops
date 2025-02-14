@@ -16,67 +16,6 @@
 
 import os
 
-#  Script to install RabbitMQ and Lithops in the VM
-BUILD_IMAGE_INIT_SCRIPT = """#!/bin/bash
-sudo echo "\$nrconf{restart} = 'a';" | sudo tee -a /etc/needrestart/needrestart.conf
-"""
-
-BUILD_IMAGE_INSTALL_SCRIPT = """
-sudo apt-get update -y
-
-# Check if I need to install docker
-if [ "$use_docker" = "True" ] 
-then
-    # Add Docker repository
-    sudo apt install apt-transport-https ca-certificates curl software-properties-common -y
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu jammy stable" -y
-
-    # Install Docker
-    sudo apt-get install docker-ce -y
-
-    # Add user to docker group
-    sudo usermod -aG docker ${USER}
-fi
-
-# Install python
-sudo add-apt-repository ppa:deadsnakes/ppa -y
-sudo apt-get install $pyversion python3-virtualenv -y
-virtualenv -p /usr/bin/$pyversion --download lithops
-source lithops/bin/activate
-pip install setuptools --upgrade
-pip install pika lithops[all]==$lithopsversion
-"""
-
-BUILD_IMAGE_CONFIG_SCRIPT = """
-source lithops/bin/activate
-
-sudo tee send_confirmation.py > /dev/null <<EOF
-import pika
-import os
-
-amqp_url = os.getenv('amqp_url')
-timeout_client = int(os.getenv('timeout'))
-
-params = pika.URLParameters(amqp_url)
-connection = pika.BlockingConnection(params)
-channel = connection.channel()
-channel.queue_declare(queue='build_confirmation', durable=True)
-
-# Send confirmation of the rabbit server
-channel.basic_publish(
-    exchange='',
-    routing_key='build_confirmation',
-    body="",
-    properties=pika.BasicProperties(
-        delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE
-    ))
-connection.close()
-EOF
-
-python send_confirmation.py
-"""
-
 DEFAULT_CONFIG_KEYS = {
     'worker_instance_type': 't2.micro',  # 't2.medium',
     'request_spot_instances': True,
@@ -87,35 +26,6 @@ DEFAULT_CONFIG_KEYS = {
     'exec_mode': 'reuse',
     'docker_server': 'docker.io'
 }
-
-FH_ZIP_LOCATION = os.path.join(os.getcwd(), 'lithops_ec2.zip')
-
-DOCKERFILE_DEFAULT = """
-RUN apt-get update && apt-get install -y zip \
-        && apt-get clean \
-        && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --upgrade --ignore-installed setuptools six pip \
-    && pip install --upgrade --no-cache-dir --ignore-installed \
-        pika \
-        boto3 \
-        ibm-cloud-sdk-core \
-        ibm-cos-sdk \
-        requests \
-        panda \
-        numpy \
-        cloudpickle \
-        ps-mem \
-        tblib \
-        psutil
-
-# Copy Lithops proxy and lib to the container image.
-WORKDIR /lithops
-
-COPY lithops_ec2.zip .
-RUN unzip lithops_ec2.zip && rm lithops_ec2.zip
-"""
-
 
 def load_config(config_data):
     if not config_data['aws_ec2_rabbit']:
@@ -135,6 +45,11 @@ def load_config(config_data):
 
     if 'region_name' in config_data['aws_ec2_rabbit']:
         config_data['aws_ec2_rabbit']['region'] = config_data['aws_ec2_rabbit'].pop('region_name')
+    
+    if 'target_ami' not in config_data['aws_ec2_rabbit']:
+        raise Exception('"target_ami" is mandatory under the "aws_ec2_rabbit" section of the configuration')
+    else:
+        config_data['aws_ec2_rabbit']['runtime'] = config_data['aws_ec2_rabbit']['target_ami']
 
     if 'region' not in config_data['aws_ec2_rabbit']:
         raise Exception('"region" is mandatory under the "aws_ec2_rabbit" or "aws" section of the configuration')

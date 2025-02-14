@@ -34,9 +34,6 @@ from lithops.constants import COMPUTE_CLI_MSG, JOBS_PREFIX
 
 from . import config
 
-DEFAULT_UBUNTU_IMAGE = 'ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-202306*'
-DEFAULT_UBUNTU_ACCOUNT_ID = '099720109477'
-
 logger = logging.getLogger(__name__)
 urllib3.disable_warnings()
 
@@ -90,193 +87,33 @@ class AWSEC2Backend:
         py_version = utils.CURRENT_PY_VERSION.replace('.', '')
         return f'lithops-ec2-default-v{py_version}-lv{__version__}'
     
-    def _build_runtime_ami(self, image_name, script_file=None, extra_args=[]):
-        logger.info(f'Building AWS AMI with name: {image_name}')
-
-        #  If image not exists, create it
-        aws_images = self.ec2_client.describe_images(Filters=[{'Name': 'name', 'Values': [image_name]}])['Images']
-        if len(aws_images) > 0:
-            if '--overwrite' in extra_args or '-o' in extra_args:
-                logger.debug(f"Overwriting image {image_name}")
-                self.delete_runtime(image_name, None)
-            else:
-                logger.debug(f"Image {image_name} already exists."
-                             " Use '--overwrite' or '-o' if you want ot overwrite it")
-                self.config['target_ami'] = aws_images[0]['ImageId']
-                return
-
-        #  Get the default image ID
-        if 'target_ami' not in self.config:
-            self._extract_ami(DEFAULT_UBUNTU_IMAGE, True)
-
-        #  Create new instance to build the image
-        build_vm = EC2Instance('building-image-' +image_name, self.config, self.ec2_client)
-
-        #  Install actual python and lithops version
-        user_data = config.BUILD_IMAGE_INIT_SCRIPT + \
-            f"\nexport pyversion=python{sys.version_info[0]}.{sys.version_info[1]}" + \
-            f"\nexport lithopsversion={__version__}"
-
-        # Install all the needed packages (RabbitMQ, Python and Docker if needed)
-        docker_prefix = "\nexport use_docker=True\n" if self.config.get('docker_image', False) else ""
-        user_data += docker_prefix + config.BUILD_IMAGE_INSTALL_SCRIPT
-
-        #  Include entry_point.py
-        current_dir = os.path.dirname(os.path.realpath(__file__))
-        entry_point_path = os.path.join(current_dir, 'entry_point.py')
-        with open(entry_point_path, 'r') as f:
-            entry_point_path = f.read()
-            user_data = user_data + f"\necho '{entry_point_path}' > entry_point.py\n"
-
-        #  Install all custom packages
-        if script_file and os.path.isfile(script_file):
-            logger.debug(f"Uploading local file '{script_file}' to VM image")
-            with open(script_file, 'r') as f:
-                script_file = f.read()
-                user_data = user_data + script_file
-
-        #  Include custom files in the image
-        include_files = [arg for arg in extra_args if not arg.startswith(
-            '-') and arg not in ['-i', '--include', extra_args[extra_args.index(arg)+1] if arg in ['-i', '--include'] else '']]
-        if include_files:
-            for src_dst_file in include_files:
-                src_file, dst_file = src_dst_file.split(':')
-                if os.path.isfile(src_file):
-                    logger.debug(f"Uploading local file '{src_file}' to VM image in '{dst_file}'")
-                    with open(src_file, 'r') as f:
-                        src_file = f.read()
-                        user_data = user_data + f"\necho '{src_file}' > {dst_file}\n"
-
-        # Include the configuration script
-        user_data = user_data + f"\nexport amqp_url={self.amqp_url}\n" + \
-            f"export timeout={self.config['runtime_timeout']}\n" + config.BUILD_IMAGE_CONFIG_SCRIPT
-
-        # Create the build VM and wait for it to be ready
-        build_vm.create(user_data=user_data)
-        logger.debug("Executing Lithops installation script. Be patient, this process can take up to 5 minutes")
-        self.wait_build_configured()
-        logger.debug("Lithops installation script finished")
-
-        #  Create an image from the actual VM
-        self.ec2_client.create_image(
-            InstanceId=build_vm.instance_id,
-            Name=image_name,
-            Description='Lithops Image'
-        )
-
-        logger.info("Starting VM image creation")
-        logger.debug("Be patient, VM imaging can take up to 5 minutes")
-
-        while True:
-            images = self.ec2_client.describe_images(Filters=[{'Name': 'name', 'Values': [image_name]}])['Images']
-            if len(images) > 0:
-                logger.debug(f"VM Image is being created. Current status: {images[0]['State']}")
-                if images[0]['State'] == 'available':
-                    break
-                if images[0]['State'] == 'failed':
-                    raise Exception(f"Failed to create VM Image {image_name}")
-            time.sleep(20)
-
-        build_vm.delete()
-        logger.info(f"VM Image created. Image ID: {images[0]['ImageId']}")
-        self.config['target_ami'] = images[0]['ImageId']
-
-    def _build_default_docker(self, docker_image_name, extra_args=[]):
-        """
-        Builds the default runtime
-        """
-        # Build default runtime using local dokcer
-        dockerfile = "Dockefile.default-ec2-runtime"
-        with open(dockerfile, 'w') as f:
-            f.write(f"FROM python:{utils.CURRENT_PY_VERSION}-slim-buster\n")
-            f.write(config.DOCKERFILE_DEFAULT)
-        try:
-            self._build_runtime_docker(docker_image_name, dockerfile, extra_args)
-        finally:
-            os.remove(dockerfile)
-
-    def _build_runtime_docker(self, docker_image_name, dockerfile=None, extra_args=[]):
-        logger.info(f'Building runtime {docker_image_name} from {dockerfile}')
-
-        docker_path = utils.get_docker_path()
-
-        #  Build the docker image
-        assert os.path.isfile(dockerfile), f'Cannot locate "{dockerfile}"'
-        cmd = f'{docker_path} build --platform=linux/amd64 -t {docker_image_name} -f {dockerfile} . ' + ' '.join(extra_args)
-
-        try:
-            entry_point = os.path.join(os.path.dirname(__file__), 'entry_point.py')
-            utils.create_handler_zip(config.FH_ZIP_LOCATION, entry_point, 'entry_point.py')
-            utils.run_command(cmd)
-        finally:
-            os.remove(config.FH_ZIP_LOCATION)
-
-        #  Check if exists the docker credentials
-        required_keys = ['docker_user', 'docker_password', 'docker_server']
-        if not all(key in self.config for key in required_keys):
-            missing_keys = ', '.join(key for key in required_keys if key not in self.config)
-            raise Exception(f'Docker credentials ({missing_keys}) are needed to build custom Docker images')
-
-        #  Login to the docker registry
-        cmd = f'{docker_path} login -u {self.config.get("docker_user")} --password-stdin {self.config.get("docker_server")}'
-        utils.run_command(cmd, input=self.config.get("docker_password"))
-
-        #  Push the image to the registry
-        logger.debug(f'Pushing runtime {docker_image_name} to container registry')
-        if utils.is_podman(docker_path):
-            cmd = f'{docker_path} push {docker_image_name} --format docker --remove-signatures'
-        else:
-            cmd = f'{docker_path} push {docker_image_name}'
-        utils.run_command(cmd)
-
     def build_runtime(self, image_name, script_file=None, extra_args=[]):
         """
         Builds a new Docker image or AMI with the runtime
         """
-        # Check if user wants to build a docker image or an AMI
-        if '--docker' in extra_args:
-            extra_args.remove('--docker')
-            if script_file:
-                self._build_runtime_docker(image_name, script_file, extra_args)
-            else:
-                self._build_default_docker(image_name, extra_args)
-
-        #  Build an AMI
-        else:
-            self._build_runtime_ami(image_name, script_file, extra_args)
-
-        logger.debug('Building done!')
+        logger.debug('No build needed for AWS EC2 backend')
 
     def deploy_runtime(self, image_name, memory, timeout):
         """
         Deploys a new runtime
         """
-        default_image_name = self._get_default_runtime_image_name()
-        if image_name == default_image_name:
-            self.build_runtime(image_name)
-
         logger.info(f"Deploying image: {image_name}")
-
-        # Create a worker to generate the runtime metadata
-        runtime_meta = self._generate_runtime_meta(image_name)
-
-        return runtime_meta
+        return self._generate_runtime_meta(image_name)
 
     def delete_runtime(self, image_name, memory, version=__version__):
         """
         Deletes a runtime
         """
-        images = self.ec2_client.describe_images(Filters=[{'Name': 'name', 'Values': [image_name]}])['Images']
+        logger.debug('No runtime deletion needed for AWS EC2 backend')
 
-        if len(images) > 0:
-            image_id = images[0]['ImageId']
-            logger.debug(f"Deleting existing VM Image '{image_name}'")
-            self.ec2_client.deregister_image(ImageId=image_id)
-            images = self.ec2_client.describe_images(Filters=[{'Name': 'name', 'Values': [image_name]}])['Images']
-            while len(images) > 0:
-                time.sleep(2)
-                images = self.ec2_client.describe_images(Filters=[{'Name': 'name', 'Values': [image_name]}])['Images']
-            logger.debug(f"VM Image '{image_name}' successfully deleted")
+    def list_runtimes(self, image_name='all'):
+        """
+        List all the runtimes
+        return: list of tuples (image_name, memory)
+        """
+        logger.debug('Listing runtimes')
+        logger.debug('Note that this backend does not manage runtimes')
+        return []
 
     def clean(self, **kwargs):
         """
@@ -295,15 +132,7 @@ class AWSEC2Backend:
 
             logger.info('All EC2 VMs deleted')
 
-    def list_runtimes(self, image_name='all'):
-        """
-        List all the runtimes
-        return: list of tuples (image_name, memory)
-        """
-        logger.debug('Listing runtimes')
-        logger.debug('Note that this backend does not manage runtimes')
-        return []
-
+    # TODO: Change docker_user and docker_password to AWS CodeBuild
     def create_worker(self, name, cpu):
         """
         Creates a new worker VM instance
@@ -316,24 +145,18 @@ class AWSEC2Backend:
         }
 
         docker_image = self.config.get('docker_image', False)
-        if docker_image:
-            # Check if docker_user and docker_password are set
-            required_keys = ['docker_user', 'docker_password', 'docker_server']
+        # Check if docker_user and docker_password are set
+        required_keys = ['docker_user', 'docker_password', 'docker_server']
 
-            if not all(key in self.config for key in required_keys):
-                missing_keys = ', '.join(key for key in required_keys if key not in self.config)
-                raise Exception(f'Docker credentials ({missing_keys}) are needed to build custom Docker images')
+        if not all(key in self.config for key in required_keys):
+            missing_keys = ', '.join(key for key in required_keys if key not in self.config)
+            raise Exception(f'Docker credentials ({missing_keys}) are needed to build custom Docker images')
 
-            user_data = f"""#!/bin/bash
-                echo {self.config['docker_password']} | docker login -u {self.config['docker_user']} --password-stdin {self.config['docker_server']}
-                sudo docker run --name lithops-rabbitmq {self.config['docker_server']}/{docker_image} python entry_point.py 'start_rabbitmq' {utils.dict_to_b64str(payload)}
-                sudo shutdown -h now
-            """
-        else:
-            user_data = f"""#!/bin/bash
-                source lithops/bin/activate
-                python entry_point.py 'start_rabbitmq' {utils.dict_to_b64str(payload)}
-            """
+        user_data = f"""#!/bin/bash
+            echo {self.config['docker_password']} | docker login -u {self.config['docker_user']} --password-stdin {self.config['docker_server']}
+            sudo docker run --name lithops-rabbitmq {self.config['docker_server']}/{docker_image} python -m lithops.serverless.backends.aws_ec2_rabbit.entry_point 'start_rabbitmq' {utils.dict_to_b64str(payload)}
+            sudo shutdown -h now
+        """
 
         worker = EC2Instance(name, self.config, self.ec2_client)
 
@@ -344,18 +167,6 @@ class AWSEC2Backend:
             return
 
         self.workers.append(worker)
-
-    def _extract_ami(self, image_name, default=False):
-        owners = [DEFAULT_UBUNTU_ACCOUNT_ID] if default else ["self"]
-        images = self.ec2_client.describe_images(
-            Filters=[{'Name': 'name', 'Values': [image_name]}],
-            Owners=owners
-        )['Images']
-
-        if len(images) > 0:
-            self.config['target_ami'] = images[0]['ImageId']
-        else:
-            raise Exception(f"Image {image_name} not found")
 
     def _get_workers(self):
         """
@@ -375,7 +186,6 @@ class AWSEC2Backend:
                 worker = EC2Instance(instance['Tags'][0]['Value'], self.config, self.ec2_client)
                 worker.instance_id = instance['InstanceId']
                 worker.spot_instance = instance.get('InstanceLifecycle', None) == 'spot'
-                worker.target_ami = instance['ImageId']
                 worker.cpu_count = instance['CpuOptions']['CoreCount']
                 workers.append(worker)
 
@@ -395,11 +205,6 @@ class AWSEC2Backend:
         """
         # Get all the workers
         self.workers = self._get_workers()
-
-        # Check if the target AMI is set
-        if self.config.get('target_ami', None) is None:
-            self._extract_ami(image_name)
-
         cpu_count = 0
 
         #  Get number of cpus
@@ -470,6 +275,7 @@ class AWSEC2Backend:
 
         return activation_id
 
+    # TODO: Improve it
     def _generate_runtime_meta(self, image_name):
         runtime_name = self._format_job_name(image_name, 128)
         job_name = f'{runtime_name}-meta'
@@ -480,27 +286,19 @@ class AWSEC2Backend:
         payload['runtime_name'] = runtime_name
         payload['log_level'] = logger.getEffectiveLevel()
 
-        self._extract_ami(image_name)
-
         worker = EC2Instance(job_name, self.config, self.ec2_client)
         docker_image = self.config.get('docker_image', False)
-        if docker_image:
-            # Check if docker_user and docker_password are set
-            required_keys = ['docker_user', 'docker_password', 'docker_server']
+        # Check if docker_user and docker_password are set
+        required_keys = ['docker_user', 'docker_password', 'docker_server']
 
-            if not all(key in self.config for key in required_keys):
-                missing_keys = ', '.join(key for key in required_keys if key not in self.config)
-                raise Exception(f'Docker credentials ({missing_keys}) are needed to build custom Docker images')
+        if not all(key in self.config for key in required_keys):
+            missing_keys = ', '.join(key for key in required_keys if key not in self.config)
+            raise Exception(f'Docker credentials ({missing_keys}) are needed to build custom Docker images')
 
-            user_data = f"""#!/bin/bash
-                echo {self.config['docker_password']} | docker login -u {self.config['docker_user']} --password-stdin {self.config['docker_server']}
-                sudo docker run --name lithops-rabbitmq {self.config['docker_server']}/{docker_image} python entry_point.py 'get_metadata' {utils.dict_to_b64str(payload)}
-            """
-        else:
-            user_data = f"""#!/bin/bash
-                source lithops/bin/activate
-                python entry_point.py 'get_metadata' {utils.dict_to_b64str(payload)}
-            """
+        user_data = f"""#!/bin/bash
+            echo {self.config['docker_password']} | docker login -u {self.config['docker_user']} --password-stdin {self.config['docker_server']}
+            sudo docker run --name lithops-rabbitmq {self.config['docker_server']}/{docker_image} python -m lithops.serverless.backends.aws_ec2_rabbit.entry_point 'get_metadata' {utils.dict_to_b64str(payload)}
+        """
 
         worker.create(user_data=user_data)
 
@@ -553,28 +351,6 @@ class AWSEC2Backend:
 
         return runtime_info
 
-    def wait_build_configured(self):
-        """
-        Wait until the VM send the confirmation message as the configuration is finished
-        """
-        while True:
-            try:
-                params = pika.URLParameters(self.amqp_url)
-                connection = pika.BlockingConnection(params)
-                channel = connection.channel()
-                break  # If connection is established, break the loop
-            except pika.exceptions.AMQPConnectionError:
-                time.sleep(0.5)  # If connection fails, sleep and retry
-
-        channel.queue_declare(queue='build_confirmation', durable=True)
-
-        def callback(ch, method, properties, body):
-            ch.stop_consuming()  # Stop consuming messages
-
-        channel.basic_consume(queue='build_confirmation', on_message_callback=callback, auto_ack=True)
-        channel.start_consuming()
-
-
 class EC2Instance:
     def __init__(self, name, ec2_config, ec2_client):
         """
@@ -586,13 +362,13 @@ class EC2Instance:
 
         self.worker_instance_type = self.config['worker_instance_type']
         self.spot_instance = self.config['request_spot_instances']
+        self.target_ami = self.config['target_ami']
         self.availability_zone = self.config.get('availability_zone', None)
         self.memory_size = self.config.get('memory_size', None)
 
         self.ec2_client = ec2_client
 
         self.instance_id = None
-        self.target_ami = None
         self.cpu_count = 0
 
     def create(self, user_data=None):
@@ -600,7 +376,7 @@ class EC2Instance:
         Creates a new VM instance
         """
         LaunchSpecification = {
-            "ImageId": self.config['target_ami'],
+            "ImageId": self.target_ami,
             "InstanceType": self.worker_instance_type,
             "IamInstanceProfile": {'Name': self.config['iam_role']},
             "Monitoring": {'Enabled': False},
@@ -650,7 +426,6 @@ class EC2Instance:
 
         instance_data = resp['Instances'][0]
         self.instance_id = instance_data['InstanceId']
-        self.target_ami = instance_data['ImageId']
         self.cpu_count = instance_data['CpuOptions']['CoreCount']
 
         logger.debug(f"VM instance {self.name} created successfully ")
